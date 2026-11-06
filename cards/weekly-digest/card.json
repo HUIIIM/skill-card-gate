@@ -1,0 +1,24 @@
+{
+  "card": {
+    "id": "weekly-digest",
+    "name": "Weekly Digest Card",
+    "version": "1.0.0",
+    "author": "Jiahui Miao",
+    "description": "Sits next to a post in the feed. Tap it and it reads the thread, drafts a weekly digest from it, and prepares a share - which it cannot send until a human approves.",
+    "entry": "run_card.py",
+    "homepage": "https://github.com/HUIIIM/skill-card-gate"
+  },
+  "tools": {
+    "feed.read_thread": {"tier": "read", "description": "Read the post and its replies the card is attached to."},
+    "digest.draft": {"tier": "draft", "description": "Compose the digest locally; nothing leaves the system."},
+    "feed.share": {"tier": "send", "description": "Post the digest back to the feed. This is a send: blocked until a human approves."}
+  },
+  "gate": {
+    "send_requires_human_approval": true,
+    "audit_log": "gate-audit.jsonl"
+  },
+  "distribution": {
+    "attach": "post",
+    "sandbox": true
+  }
+}

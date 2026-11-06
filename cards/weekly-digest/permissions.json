@@ -1,0 +1,7 @@
+{
+  "tools": {
+    "feed.read_thread": {"tier": "read"},
+    "digest.draft": {"tier": "draft"},
+    "feed.share": {"tier": "send"}
+  }
+}

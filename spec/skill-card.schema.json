@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/HUIIIM/skill-card-gate/spec/skill-card.schema.json",
+  "title": "Feed Skill Card Manifest",
+  "description": "A skill card is a small, auditable skill that rides next to a post in a feed. The manifest is the contract: identity, what the card may do (declared per tool, at an honest tier), and how it is distributed. A card whose manifest is missing, invalid, or silent about a tool is denied by the gate - there is no default tier.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["card", "tools", "gate"],
+  "properties": {
+    "card": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "version", "author", "description", "entry"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$"},
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "author": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "entry": {"type": "string", "minLength": 1, "description": "Entrypoint the host invokes when a user taps the card."},
+        "homepage": {"type": "string"}
+      }
+    },
+    "tools": {
+      "type": "object",
+      "description": "Every tool the card may call, declared once, each at exactly one tier. Tier follows effect, not the tool's name.",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tier"],
+        "properties": {
+          "tier": {"enum": ["read", "draft", "send"]},
+          "description": {"type": "string"}
+        }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["send_requires_human_approval"],
+      "properties": {
+        "send_requires_human_approval": {"const": true, "description": "Normative: a conforming card never sets this to false. Send-tier tools are physically blocked until a human approves the exact request."},
+        "audit_log": {"type": "string", "description": "Where the card's gate appends its audit events (JSON lines)."}
+      }
+    },
+    "distribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "attach": {"enum": ["post", "profile", "standalone"], "description": "How the card rides in a feed: attached to a post is the native form."},
+        "sandbox": {"type": "boolean", "description": "The card runs locally in the host sandbox; the gate governs what may leave, the sandbox governs what may run."}
+      }
+    }
+  }
+}
