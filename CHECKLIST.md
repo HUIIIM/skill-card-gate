@@ -31,6 +31,11 @@ before a card is published or a host enables third-party cards.
       the agent driving the card.
 - [ ] Approvals are bound to the exact request (tool + argument hash)
       and are single-use; replays are denied and logged.
+      (Reference gate status: the argument hash is verified at
+      execution and a mismatch is refused; single-use holds against
+      replay through the API. Forged or regressed store events are not
+      yet rejected by the state machine — until that lands, the store
+      must be writable only by trusted host code.)
 - [ ] The audit log is append-only from the card's point of view, and a
       missing or corrupt store blocks sends instead of waving them
       through.

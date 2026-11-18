@@ -26,7 +26,7 @@ Fail-closed rules, everywhere:
 
 Every decision is appended to an audit log (JSON lines) that the gate
 never rewrites: executed, blocked_pending, approved, denied, sent,
-denied_unknown_tool, denied_replay, store_unavailable.
+denied_unknown_tool, denied_replay, denied_tamper, store_unavailable.
 
 This is a reference implementation: single process, JSON file store,
 standard library only. The security model is the point; swap the store
@@ -46,6 +46,17 @@ from pathlib import Path
 from typing import Any, Callable
 
 TIERS = ("read", "draft", "send")
+
+
+def _hash_args(args: dict) -> str:
+    """Canonical hash of a request's arguments.
+
+    Computed identically at request time and at execution time, so the
+    arguments a human approved can be compared byte-for-byte with the
+    arguments about to run.
+    """
+    canonical = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class GateError(Exception):
@@ -146,13 +157,14 @@ class SendGate:
             return GateResult("executed", tool, f"tier={tier}", value=value)
         # tier == send: never execute here. Record and hand back a receipt.
         request_id = uuid.uuid4().hex[:12]
-        args_json = json.dumps(kwargs, ensure_ascii=False, sort_keys=True, default=str)
         event = {
             "type": "pending",
             "request_id": request_id,
             "tool": tool,
-            "args": json.loads(args_json),
-            "args_sha256": hashlib.sha256(args_json.encode("utf-8")).hexdigest(),
+            "args": json.loads(
+                json.dumps(kwargs, ensure_ascii=False, sort_keys=True, default=str)
+            ),
+            "args_sha256": _hash_args(kwargs),
             "created_at": self._clock(),
         }
         try:
@@ -173,7 +185,17 @@ class SendGate:
     def approve(self, request_id: str, approver: str) -> dict:
         state = self._require_pending(request_id)
         self.store.append(
-            {"type": "approved", "request_id": request_id, "by": approver, "at": self._clock()}
+            {
+                "type": "approved",
+                "request_id": request_id,
+                "by": approver,
+                "at": self._clock(),
+                # The approval carries the hash of the exact arguments it
+                # approves, so execution can verify all three agree: the
+                # hash recorded at request time, the hash the approval
+                # carries, and the hash of the arguments about to run.
+                "args_sha256": state.get("args_sha256"),
+            }
         )
         self._audit("approved", request_id=request_id, by=approver)
         return state
@@ -201,6 +223,39 @@ class SendGate:
         if state.get("last_event") != "approved":
             return GateResult(
                 "denied", tool, f"request is {state.get('last_event')}, not approved"
+            )
+        # The approval is bound to the exact arguments recorded at request
+        # time. Folded state alone cannot be trusted for this: a later
+        # event carrying different args would silently replace them. So
+        # verify three ways against the per-event record — the hash in
+        # the first pending event (the anchor), the hash the approval
+        # event carries, and the hash of the arguments about to run.
+        try:
+            events = [
+                e for e in self.store.events() if e.get("request_id") == request_id
+            ]
+        except Exception as exc:
+            self._audit("store_unavailable", request_id=request_id)
+            return GateResult("denied", tool, f"approval store unavailable: {exc}")
+        recorded = next(
+            (e.get("args_sha256") for e in events if e.get("type") == "pending"), None
+        )
+        approved_hash = next(
+            (e.get("args_sha256") for e in reversed(events) if e.get("type") == "approved"),
+            None,
+        )
+        actual = _hash_args(state.get("args", {}))
+        if (
+            recorded is None
+            or actual != recorded
+            or (approved_hash is not None and approved_hash != recorded)
+        ):
+            self._audit("denied_tamper", tool=tool, request_id=request_id)
+            return GateResult(
+                "denied",
+                tool,
+                "argument hash mismatch: the arguments to execute do not match "
+                "the arguments recorded when the request was approved",
             )
         value = self._execute(tool, state.get("args", {}))
         self.store.append({"type": "sent", "request_id": request_id, "at": self._clock()})

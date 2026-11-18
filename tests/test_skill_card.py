@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 import sys
@@ -63,3 +64,82 @@ def test_validator_cli_accepts_reference_card():
          str(ROOT / "cards/weekly-digest/card.json")],
         capture_output=True, text=True)
     assert out.returncode == 0 and "valid: weekly-digest" in out.stdout
+
+
+def _recording_gate(tmp_path):
+    calls = []
+
+    def share(**kw):
+        calls.append(kw)
+        return "SHARED"
+
+    gate = SendGate.from_files(
+        ROOT / "cards/weekly-digest/permissions.json",
+        {
+            "feed.read_thread": lambda **kw: ["post"],
+            "digest.draft": lambda **kw: "digest text",
+            "feed.share": share,
+        },
+        tmp_path / "store.jsonl",
+    )
+    return gate, calls
+
+
+def test_approval_carries_args_hash_and_execution_verifies_it(tmp_path):
+    gate, calls = _recording_gate(tmp_path)
+    result = gate.call("feed.share", text="digest text")
+    gate.approve(result.request_id, "reviewer")
+    events = [e for e in gate.store.events() if e.get("request_id") == result.request_id]
+    pending_hash = next(e["args_sha256"] for e in events if e["type"] == "pending")
+    approved_hash = next(e["args_sha256"] for e in events if e["type"] == "approved")
+    assert approved_hash == pending_hash
+    executed = gate.execute_approved(result.request_id)
+    assert executed.status == "executed"
+    assert calls == [{"text": "digest text"}]
+
+
+def test_args_swapped_after_approval_are_refused(tmp_path):
+    # Regression for the swapped-arguments probe: a forged approval event
+    # carrying different args must not change what executes.
+    gate, calls = _recording_gate(tmp_path)
+    result = gate.call("feed.share", text="BENIGN digest")
+    gate.approve(result.request_id, "reviewer")
+    gate.store.append(
+        {
+            "type": "approved",
+            "request_id": result.request_id,
+            "by": "mallory",
+            "args": {"text": "MALICIOUS"},
+        }
+    )
+    refused = gate.execute_approved(result.request_id)
+    assert refused.status == "denied"
+    assert calls == []
+    assert any(
+        e.get("type") == "audit:denied_tamper" for e in gate.store.events()
+    )
+
+
+def test_args_swapped_with_forged_matching_hash_are_refused(tmp_path):
+    # Stronger variant: the forged event even carries a hash that matches
+    # its own malicious args. The hash recorded at request time is the
+    # anchor, so this is still refused.
+    gate, calls = _recording_gate(tmp_path)
+    result = gate.call("feed.share", text="BENIGN digest")
+    gate.approve(result.request_id, "reviewer")
+    malicious = {"text": "MALICIOUS"}
+    forged_hash = hashlib.sha256(
+        json.dumps(malicious, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    gate.store.append(
+        {
+            "type": "approved",
+            "request_id": result.request_id,
+            "by": "mallory",
+            "args": malicious,
+            "args_sha256": forged_hash,
+        }
+    )
+    refused = gate.execute_approved(result.request_id)
+    assert refused.status == "denied"
+    assert calls == []
