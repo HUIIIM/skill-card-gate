@@ -9,14 +9,14 @@ An open spec for feed-native skill cards - small skills that ride next to a post
 <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"/>
 <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-blue"/>
 <img alt="Dependencies: none" src="https://img.shields.io/badge/dependencies-none-brightgreen"/>
-<img alt="Tests" src="https://img.shields.io/badge/tests-6%20passing-brightgreen"/>
+<img alt="Tests" src="https://img.shields.io/badge/tests-9%20passing-brightgreen"/>
 </p>
 
 ---
 
 A skill card is a mini-tool a creator attaches to a post: readers tap it right in the feed and it does something useful on the spot - summarizes the thread, drafts a reply, builds a digest. Useful cards eventually want to *send*: post the reply, share the digest, message the author. That is exactly where trust breaks, because a card distributed by strangers should never hold send power on its own.
 
-So the card's manifest declares every tool it may call, each at an honest tier, and `send`-tier calls do not execute. They are recorded as pending approval requests. A human approves the exact request out of band, and only then does it run - once.
+So the card's manifest declares every tool it may call, each at an honest tier, and `send`-tier calls do not execute. They are recorded as pending approval requests. A human approves the exact request out of band, and only then does it run.
 
 Here is the reference card doing exactly that (real output from `cards/weekly-digest/run_card.py`):
 
@@ -43,7 +43,7 @@ $ python cards/weekly-digest/run_card.py execute 00540c7a4963
   -> SHARED to feed: Weekly digest (232 chars)
 ```
 
-Approvals are single-use. Running the same execute again answers `[denied] already executed; approvals are single-use`.
+Approvals are single-use against replay through the gate's own API: running the same execute again answers `[denied] already executed; approvals are single-use`. The limits of that guarantee in the reference implementation are stated under [Limits](#limits).
 
 ## Quick start
 
@@ -52,10 +52,10 @@ git clone https://github.com/HUIIIM/skill-card-gate
 cd skill-card-gate
 python spec/validate_card.py cards/weekly-digest/card.json   # check a card against the spec
 python cards/weekly-digest/run_card.py                       # watch a send get blocked
-python -m pytest tests/ -q                                   # 6 tests: spec + gate promises
+python -m pytest tests/ -q                                   # 9 tests: spec + gate promises
 ```
 
-No dependencies. Python 3.10+, standard library only.
+No runtime dependencies. Python 3.10+, standard library only. (The test suite uses pytest — a development dependency, not needed to run the gate.)
 
 ## The card manifest
 
@@ -84,15 +84,16 @@ tests/test_skill_card.py          Spec and gate promises, as executable tests
 ## How it works
 
 - The card calls tools only through the gate. `read` and `draft` pass through. `send` is converted into a pending approval request (tool, exact arguments, and a hash of them) appended to a JSON-lines store; the card receives a receipt instead of a result.
-- A human reviews the queue on a surface the card cannot write to (this CLI, or a host UI over the same store) and appends an approval or a denial.
-- A separate executor step runs an approved request once. The arguments that execute are the arguments that were approved; the approval is consumed by executing.
-- Every step appends to an audit log the card cannot rewrite. If the store is unavailable or corrupt, sends stop. Refusal is the default in every failure mode.
+- A human reviews the queue on a surface the card cannot write to (this CLI run by the human, or a host UI over the same store) and appends an approval or a denial. In the reference implementation that separation is a deployment duty, not something the code itself enforces — see Limits.
+- A separate executor step runs an approved request. Before executing, the gate re-computes the argument hash and checks it against the hash recorded at request time and the hash carried by the approval event; a mismatch is refused and audited as `denied_tamper`. The approval is consumed by executing.
+- Every step appends to an audit log. In this reference implementation the log is the same JSON-lines store, appended only through the gate; that makes it tamper-evident by convention, not tamper-proof against code running in the same process. A production host keeps the store on a surface card code cannot write to. If the store is unavailable or corrupt, sends stop: refusal is the default in every failure mode.
 
 ## Limits
 
 - **It only governs tools routed through it.** A card that also holds a direct posting credential can walk around the gate. The checklist covers this: cards must not hold send-capable credentials at all.
 - **It is not the sandbox.** The gate governs outbound sends, not what card code may run. Hosts still sandbox execution; this spec is the missing second layer, not a replacement for the first.
 - **Approval quality is on the human.** The gate guarantees a human sees the real content and destination before anything leaves. It cannot make them read it.
+- **The reference gate is not yet a hardened security control.** Known gaps, tracked in issue #4: the request state machine does not yet reject forged lifecycle events written directly to the store (argument substitution after approval *is* refused, by the hash check above; a writer with raw store access is otherwise inside the trust boundary, which is why the gate must run outside the card's process); the pending queue has no cap or expiry yet; CLI approver identity is recorded as given, not authenticated.
 
 ## Series
 
